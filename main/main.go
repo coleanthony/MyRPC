@@ -2,7 +2,8 @@ package main
 
 import (
 	"MyRPC"
-	"MyRPC/xlient"
+	"MyRPC/registry"
+	"MyRPC/xclient"
 	"context"
 	"log"
 	"net"
@@ -62,7 +63,7 @@ func startServerLoadbalance(addr chan string) {
 }
 
 // 封装一个方法 foo，便于在 Call 或 Broadcast 之后统一打印成功或失败的日志。
-func foo(xc *xlient.XClient, ctx context.Context, typ, servivemethod string, args *Args) {
+func foo(xc *xclient.XClient, ctx context.Context, typ, servivemethod string, args *Args) {
 	var reply int
 	var err error
 	switch typ {
@@ -80,8 +81,8 @@ func foo(xc *xlient.XClient, ctx context.Context, typ, servivemethod string, arg
 
 // callblc与broadcastblc
 func callblc(addr1, addr2 string) {
-	d := xlient.NewMultiServerDiscovery([]string{"tcp@" + addr1, "tcp@" + addr2})
-	xc := xlient.NewXClient(d, xlient.RandomSelect, nil)
+	d := xclient.NewMultiServerDiscovery([]string{"tcp@" + addr1, "tcp@" + addr2})
+	xc := xclient.NewXClient(d, xclient.RandomSelect, nil)
 	defer func() {
 		err := xc.Close()
 		if err != nil {
@@ -105,8 +106,8 @@ func callblc(addr1, addr2 string) {
 }
 
 func broadcastblc(addr1, addr2 string) {
-	d := xlient.NewMultiServerDiscovery([]string{"tcp@" + addr1, "tcp@" + addr2})
-	xc := xlient.NewXClient(d, xlient.RandomSelect, nil)
+	d := xclient.NewMultiServerDiscovery([]string{"tcp@" + addr1, "tcp@" + addr2})
+	xc := xclient.NewXClient(d, xclient.RandomSelect, nil)
 	defer func() {
 		err := xc.Close()
 		if err != nil {
@@ -211,6 +212,7 @@ func CallHTTPdebug(addr chan string) {
 	wg.Wait()
 }
 
+//test httpserver
 /*
 func main() {
 	log.SetFlags(0)
@@ -219,6 +221,8 @@ func main() {
 	startServerHTTPdebug(addr)
 }*/
 
+//test loadbalance
+/*
 func main() {
 	log.SetFlags(0)
 	ch1 := make(chan string)
@@ -230,4 +234,95 @@ func main() {
 	time.Sleep(time.Second)
 	callblc(addr1, addr2)
 	broadcastblc(addr1, addr2)
+}*/
+
+func startRegistry(wg *sync.WaitGroup) {
+	l, _ := net.Listen("tcp", ":9999")
+	registry.HandleHTTP()
+	wg.Done()
+	_ = http.Serve(l, nil)
+}
+
+func startServerRegistry(registryAddr string, wg *sync.WaitGroup) {
+	var foo Foo
+	l, _ := net.Listen("tcp", ":0")
+	server := MyRPC.NewServer()
+	_ = server.Register(&foo)
+	registry.Heartbeat(registryAddr, "tcp@"+l.Addr().String(), 0)
+	wg.Done()
+	server.Accept(l)
+}
+
+func callReg(reg string) {
+	d := xclient.NewRegistryDiscovery(reg, 0)
+	xc := xclient.NewXClient(d, xclient.RandomSelect, nil)
+	defer func() {
+		err := xc.Close()
+		if err != nil {
+			log.Println("callblc close error")
+			return
+		}
+	}()
+	// send request & receive response
+	var wg sync.WaitGroup
+	for i := 0; i < 5; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			foo(xc, context.Background(), "call", "Foo.Sum", &Args{
+				Num1: i,
+				Num2: i * i,
+			})
+		}(i)
+	}
+	wg.Wait()
+}
+
+func broadcastReg(reg string) {
+	d := xclient.NewRegistryDiscovery(reg, 0)
+	xc := xclient.NewXClient(d, xclient.RandomSelect, nil)
+	defer func() {
+		err := xc.Close()
+		if err != nil {
+			log.Println("callblc close error")
+			return
+		}
+	}()
+	// send request & receive response
+	var wg sync.WaitGroup
+	for i := 0; i < 5; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			foo(xc, context.Background(), "broadcast", "Foo.Sum", &Args{
+				Num1: i,
+				Num2: i * i,
+			})
+			ctx, _ := context.WithTimeout(context.Background(), time.Second*2)
+			foo(xc, ctx, "broadcast", "Foo.Sleep", &Args{
+				Num1: i,
+				Num2: i * i,
+			})
+		}(i)
+	}
+	wg.Wait()
+}
+
+func main() {
+	log.SetFlags(0)
+	registryaddr := "http://localhost:9999/_myrpc_/registry"
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go startRegistry(&wg)
+	wg.Wait()
+
+	time.Sleep(time.Second)
+	wg.Add(2)
+	go startServerRegistry(registryaddr, &wg)
+	go startServerRegistry(registryaddr, &wg)
+	wg.Wait()
+
+	time.Sleep(time.Second)
+	callReg(registryaddr)
+	broadcastReg(registryaddr)
 }

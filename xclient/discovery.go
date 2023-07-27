@@ -1,4 +1,4 @@
-package xlient
+package xclient
 
 import (
 	"errors"
